@@ -9,3 +9,8 @@ wheels/
 # Virtual environments
 .venv
 data/*
+
+ui/static/*
+.idea
+ui/model.pkl
+ui/test.csv
