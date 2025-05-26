@@ -13,11 +13,22 @@
         <h2 class="card-title text-center mb-4">📈 Kết quả dự đoán</h2>
 
         <h5>Dự đoán:</h5>
-        <ul class="list-group mb-4">
-          {% for value in predictions %}
-            <li class="list-group-item">{{ value }}</li>
-          {% endfor %}
-        </ul>
+        <table class="table table-bordered table-striped mb-4">
+          <thead class="thead-dark">
+            <tr>
+              <th>SaleID</th>
+              <th>Giá dự đoán</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for sale_id, value in predictions %}
+            <tr>
+              <td>{{ sale_id }}</td>
+              <td>{{ value | round(2) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
 
         <h5>Biểu đồ: Feature Importances</h5>
         <img src="{{ plot1 }}" class="img-fluid rounded shadow-sm mb-4" alt="Feature Importances">
