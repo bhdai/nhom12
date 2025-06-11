@@ -4,35 +4,222 @@
     <meta charset="UTF-8">
     <title>Dự đoán từ CSV</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .spinner-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+        }
+        
+        .data-preview {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .nav-tabs {
+            margin-bottom: 15px;
+        }
+        
+        .tab-content {
+            border: 1px solid #dee2e6;
+            border-top: none;
+            padding: 15px;
+            border-radius: 0 0 5px 5px;
+            background-color: #fff;
+        }
+    </style>
 </head>
 <body>
     <div class="container mt-5">
         <h2 class="mb-4 text-center">📈 Dự đoán từ file CSV</h2>
 
-        <form action="/" method="post" enctype="multipart/form-data" class="card p-4 shadow-sm">
-            <div class="mb-3">
-                <label for="file" class="form-label">Chọn file CSV:</label>
-                <input type="file" name="file" id="file" accept=".csv" class="form-control" required>
+        {% if not show_predict_button %}
+            <!-- Upload form only shown if we're not in "preview" mode -->
+            <form action="/" method="post" enctype="multipart/form-data" class="card p-4 shadow-sm" id="upload-form">
+                <div class="mb-3">
+                    <label for="file" class="form-label">Chọn file CSV:</label>
+                    <input type="file" name="file" id="file" accept=".csv" class="form-control" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Tải lên & Xem trước</button>
+            </form>
+        {% else %}
+            <!-- Data preview shown after file is uploaded -->
+            <div class="card p-4 shadow-sm">
+                <h3>Xem trước dữ liệu: {{ filename }}</h3>
+                <div class="d-flex justify-content-between mb-3">
+                    <div>
+                        <strong>Số hàng:</strong> {{ num_rows }}
+                    </div>
+                    <div>
+                        <strong>Số cột:</strong> {{ num_cols }}
+                    </div>
+                </div>
+                
+                <!-- Tabs for different types of data insights -->
+                <ul class="nav nav-tabs" id="dataTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="preview-tab" data-bs-toggle="tab" data-bs-target="#preview" type="button" role="tab">
+                            Xem trước dữ liệu
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="stats-tab" data-bs-toggle="tab" data-bs-target="#stats" type="button" role="tab">
+                            Thống kê
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="missing-tab" data-bs-toggle="tab" data-bs-target="#missing" type="button" role="tab">
+                            Dữ liệu thiếu
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="dtypes-tab" data-bs-toggle="tab" data-bs-target="#dtypes" type="button" role="tab">
+                            Kiểu dữ liệu
+                        </button>
+                    </li>
+                    {% if dist_plot %}
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="dist-tab" data-bs-toggle="tab" data-bs-target="#dist" type="button" role="tab">
+                            Phân phối
+                        </button>
+                    </li>
+                    {% endif %}
+                    {% if date_plot %}
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="date-tab" data-bs-toggle="tab" data-bs-target="#date" type="button" role="tab">
+                            Phân tích thời gian
+                        </button>
+                    </li>
+                    {% endif %}
+                </ul>
+                
+                <div class="tab-content" id="dataTabsContent">
+                    <!-- Data Preview Tab -->
+                    <div class="tab-pane fade show active data-preview" id="preview" role="tabpanel">
+                        {{ data_preview_html | safe }}
+                    </div>
+                    
+                    <!-- Statistics Tab -->
+                    <div class="tab-pane fade data-preview" id="stats" role="tabpanel">
+                        <h5>Thống kê cho các cột số</h5>
+                        {{ stats_html | safe }}
+                    </div>
+                    
+                    <!-- Missing Data Tab -->
+                    <div class="tab-pane fade data-preview" id="missing" role="tabpanel">
+                        <h5>Phân tích dữ liệu thiếu</h5>
+                        {{ missing_html | safe }}
+                    </div>
+                    
+                    <!-- Data Types Tab -->
+                    <div class="tab-pane fade" id="dtypes" role="tabpanel">
+                        <h5>Phân phối các kiểu dữ liệu</h5>
+                        {{ dtype_html | safe }}
+                    </div>
+                    
+                    {% if dist_plot %}
+                    <!-- Distribution Plot Tab -->
+                    <div class="tab-pane fade" id="dist" role="tabpanel">
+                        <h5>Phân phối của {{ plot_col }}</h5>
+                        <p class="mb-3">
+                            {% if plot_col == 'YearMade' %}
+                            Biểu đồ này hiển thị phân phối năm sản xuất của các máy móc thiết bị, 
+                            là một yếu tố quan trọng ảnh hưởng đến giá trị máy móc. Các đường dọc đỏ 
+                            đánh dấu các thời kỳ quan trọng trong lịch sử thiết bị xây dựng.
+                            {% else %}
+                            Biểu đồ phân phối này hiển thị sự phân bố của giá trị trong cột {{ plot_col }}.
+                            {% endif %}
+                        </p>
+                        <img src="data:image/png;base64,{{ dist_plot }}" class="img-fluid" alt="Distribution plot">
+                    </div>
+                    {% endif %}
+                    
+                    {% if date_plot %}
+                    <!-- Sale Date Analysis Tab -->
+                    <div class="tab-pane fade" id="date" role="tabpanel">
+                        <h5>Phân tích dữ liệu bán hàng theo thời gian</h5>
+                        <div class="mb-4">
+                            <img src="data:image/png;base64,{{ date_plot }}" class="img-fluid" alt="Sales over time">
+                        </div>
+                        
+                        {% if price_trend_plot %}
+                        <div class="mt-4">
+                            <h5>Xu hướng giá theo thời gian</h5>
+                            <img src="data:image/png;base64,{{ price_trend_plot }}" class="img-fluid" alt="Price trends">
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <form action="/" method="post" id="predict-form" class="mt-4">
+                    <input type="hidden" name="action" value="predict">
+                    <div class="d-flex justify-content-between">
+                        <a href="/" class="btn btn-secondary">← Quay lại</a>
+                        <button type="submit" class="btn btn-success">Tiến hành dự đoán</button>
+                    </div>
+                </form>
             </div>
-            <button type="submit" class="btn btn-primary">Dự đoán</button>
-        </form>
+        {% endif %}
 
         {% if result %}
             <div class="mt-4">
-                <h4>Kết quả dự đoán:</h4>
-                {% if result is string %}
-                    <div class="alert alert-warning">{{ result }}</div>
-                {% else %}
-                    <ul class="list-group">
-                        {% for item in result %}
-                            <li class="list-group-item">{{ item }}</li>
-                        {% endfor %}
-                    </ul>
-                {% endif %}
+                <h4>Thông báo:</h4>
+                <div class="alert alert-warning">{{ result }}</div>
             </div>
         {% endif %}
     </div>
 
+    <!-- Loading overlay with spinner -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="spinner-container">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p id="loading-message" class="mt-2">Đang xử lý dữ liệu...</p>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Show loading overlay on form submission
+            const uploadForm = document.getElementById('upload-form');
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', function() {
+                    document.getElementById('loading-message').textContent = 'Đang tải lên dữ liệu...';
+                    document.getElementById('loading-overlay').style.display = 'flex';
+                });
+            }
+            
+            const predictForm = document.getElementById('predict-form');
+            if (predictForm) {
+                predictForm.addEventListener('submit', function() {
+                    document.getElementById('loading-message').textContent = 'Đang thực hiện dự đoán...';
+                    document.getElementById('loading-overlay').style.display = 'flex';
+                });
+            }
+        });
+    </script>
 </body>
 </html>

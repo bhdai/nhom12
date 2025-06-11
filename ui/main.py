@@ -23,6 +23,8 @@ templates = Jinja2Templates(directory="templates")
 latest_predictions_df = None
 latest_df_prepared = None # To store the dataframe used for prediction
 latest_df_original = None # To store the original uploaded dataframe
+# Add a cache for file content to avoid re-reading if possible, or to pass between stages
+# For simplicity, we'll use latest_df_original for now, assuming single user or dev context.
 
 try:
     with open("model.pkl", "rb") as f:
@@ -90,106 +92,305 @@ def prepare_test(df_test, to_keep_list, training_params_dict):
 
 @app.get("/", response_class=HTMLResponse)
 async def form_page(request: Request):
+    # Clear previous data when returning to the main page
+    global latest_df_original, latest_df_prepared, latest_predictions_df
+    latest_df_original = None
+    latest_df_prepared = None
+    latest_predictions_df = None
     return templates.TemplateResponse("index.html", {"request": request, "result": None})
 
-@app.post("/", response_class=HTMLResponse)
-async def handle_upload(request: Request, file: UploadFile = File(...)):
-    global latest_predictions_df, latest_df_prepared, latest_df_original # Include new global vars
+@app.post("/") # This will now handle both initial upload for preview and triggering prediction
+async def handle_upload_or_predict(request: Request, file: UploadFile = File(None), action: str = Form(None)):
+    global latest_predictions_df, latest_df_prepared, latest_df_original
 
-    if file.content_type != "text/csv":
-        return templates.TemplateResponse("index.html", {"request": request, "result": "File must be CSV."})
-
-    if model is None:
-        return templates.TemplateResponse("index.html", {"request": request, "result": "Model not loaded. Please check server logs."})
-
-    try:
-        contents = await file.read()
-        # read the CSV into df first
-        df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
-        # keep a copy of the original df for later use
-        latest_df_original = df.copy() # Store original df
-
-        # ensure 'saledate' is parsed, handling potential errors by coercing to NaT
-        df['saledate'] = pd.to_datetime(df['saledate'], errors='coerce')
+    if action == "predict":
+        if latest_df_original is None:
+            return templates.TemplateResponse("index.html", {"request": request, "result": "No file data found to predict. Please upload a file first."})
         
-        if df['saledate'].isnull().any():
-            return templates.TemplateResponse("index.html", {"request": request, "result": "Error: CSV contains rows with invalid or missing 'saledate'."})
+        df_for_prediction = latest_df_original.copy()
+        
+        try:
+            # --- This is the prediction logic, moved from the original handle_upload ---
+            df_for_prediction['saledate'] = pd.to_datetime(df_for_prediction['saledate'], errors='coerce')
+            if df_for_prediction['saledate'].isnull().any():
+                return templates.TemplateResponse("index.html", {"request": request, "result": "Error: CSV contains rows with invalid or missing 'saledate'.", "filename": getattr(latest_df_original, 'filename', 'Uploaded File')})
 
-        sale_ids = df['SalesID'].tolist()
-        first_sale_id = sale_ids[0] if sale_ids else "N/A"
+            sale_ids = df_for_prediction['SalesID'].tolist()
+            first_sale_id = sale_ids[0] if sale_ids else "N/A"
 
-        df_prepared = prepare_test(df.copy(), keeps, TRAINING_PARAMS)
-        latest_df_prepared = df_prepared.copy() # Store prepared df
+            df_prepared = prepare_test(df_for_prediction.copy(), keeps, TRAINING_PARAMS)
+            latest_df_prepared = df_prepared.copy()
 
-        predictions_array = model.predict(df_prepared)
-        predictions_array = np.exp(predictions_array)
-        prediction_list = predictions_array.tolist()
+            predictions_array = model.predict(df_prepared)
+            predictions_array = np.exp(predictions_array)
+            prediction_list = predictions_array.tolist()
 
-        # store predictions for CSV export
-        latest_predictions_df = pd.DataFrame({
-            'SaleID': sale_ids,
-            'PredictedPrice': [round(p, 2) for p in prediction_list]
-        })
+            latest_predictions_df = pd.DataFrame({
+                'SaleID': sale_ids,
+                'PredictedPrice': [round(p, 2) for p in prediction_list]
+            })
 
-        # generate Feature Importances plot
-        plot1_base64 = None
-        if hasattr(model, 'feature_importances_'):
-            importances = model.feature_importances_
-            feature_names = df_prepared.columns
-            feature_importances = pd.Series(importances, index=feature_names).sort_values(ascending=False)
+            plot1_base64 = None
+            if hasattr(model, 'feature_importances_'):
+                importances = model.feature_importances_
+                feature_names = df_prepared.columns
+                feature_importances = pd.Series(importances, index=feature_names).sort_values(ascending=False)
+                plt.figure(figsize=(10, 8))
+                sns.barplot(x=feature_importances, y=feature_importances.index)
+                plt.title('Feature Importances')
+                plt.xlabel('Importance')
+                plt.ylabel('Feature')
+                plt.tight_layout()
+                img_buffer = io.BytesIO()
+                plt.savefig(img_buffer, format='png')
+                img_buffer.seek(0)
+                plot1_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
+                plt.close()
+
+            plot_waterfall_base64 = None
+            if not df_prepared.empty:
+                row_for_interpretation = df_prepared.iloc[[0]]
+                if hasattr(model, 'estimators_') and hasattr(model, 'predict'):
+                    try:
+                        prediction, bias, contributions = treeinterpreter.predict(model, row_for_interpretation.values)
+                        waterfall_features = df_prepared.columns
+                        plt.figure(figsize=(18, 10))
+                        waterfall_chart.plot(waterfall_features, contributions[0], threshold=0.01,
+                                             rotation_value=45, formatting='{:,.3f}', net_label="Net Prediction",
+                                             Title=f"Prediction Breakdown for SaleID: {first_sale_id}")
+                        plt.subplots_adjust(bottom=0.35)
+                        plt.tight_layout()
+                        img_buffer_waterfall = io.BytesIO()
+                        plt.savefig(img_buffer_waterfall, format='png')
+                        img_buffer_waterfall.seek(0)
+                        plot_waterfall_base64 = base64.b64encode(img_buffer_waterfall.read()).decode('utf-8')
+                        plt.close()
+                    except Exception as e_ti:
+                        print(f"Error during initial tree interpretation: {e_ti}")
             
-            plt.figure(figsize=(10, 8))
-            sns.barplot(x=feature_importances, y=feature_importances.index)
-            plt.title('Feature Importances')
-            plt.xlabel('Importance')
-            plt.ylabel('Feature')
-            plt.tight_layout()
-            
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='png')
-            img_buffer.seek(0)
-            plot1_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
-            plt.close() # close the plot to free up memory
+            return templates.TemplateResponse("result.html", {
+                "request": request,
+                "predictions": zip(sale_ids, prediction_list),
+                "plot1": plot1_base64,
+                "plot_waterfall": plot_waterfall_base64,
+                "first_sale_id": first_sale_id
+            })
+            # --- End of prediction logic ---
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            print(error_detail)
+            return templates.TemplateResponse("index.html", {"request": request, "result": f"Error during prediction: {str(e)}", "filename": getattr(latest_df_original, 'filename', 'Uploaded File'), "show_predict_button": True})
 
-        # generate Waterfall chart for the first instance
-        plot_waterfall_base64 = None
-        if not df_prepared.empty:
-            # Initial waterfall for the first row
-            row_for_interpretation = df_prepared.iloc[[0]]
-            if hasattr(model, 'estimators_') and hasattr(model, 'predict'):
+    elif file: # This is the initial file upload for preview
+        if file.content_type != "text/csv":
+            return templates.TemplateResponse("index.html", {"request": request, "result": "File must be CSV."})
+        if model is None: # Check model availability early
+             return templates.TemplateResponse("index.html", {"request": request, "result": "Model not loaded. Please check server logs."})
+
+        try:
+            contents = await file.read()
+            df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+            latest_df_original = df.copy() # Store the original dataframe
+            setattr(latest_df_original, 'filename', file.filename) # Store filename
+
+            # Basic preview - First few rows
+            df_preview_html = latest_df_original.head().to_html(classes=["table", "table-sm", "table-bordered", "table-striped"], justify="left")
+            num_rows, num_cols = latest_df_original.shape
+            
+            # Generate statistical summary for numeric columns
+            stats_html = latest_df_original.describe().to_html(
+                classes=["table", "table-sm", "table-bordered", "table-striped"],
+                justify="left",
+                float_format=lambda x: f"{x:.2f}" # Format floating point numbers
+            )
+            
+            # Generate missing value analysis
+            missing_data = pd.DataFrame({
+                'Column': latest_df_original.columns,
+                'Data Type': latest_df_original.dtypes,
+                'Missing Values': latest_df_original.isna().sum(),
+                '% Missing': 100 * latest_df_original.isna().sum() / len(latest_df_original)
+            }).sort_values('% Missing', ascending=False)
+            
+            # Format the missing values percentage with 2 decimal places
+            missing_data['% Missing'] = missing_data['% Missing'].apply(lambda x: f"{x:.2f}%")
+            
+            missing_html = missing_data.to_html(
+                classes=["table", "table-sm", "table-bordered", "table-striped"],
+                justify="left",
+                index=False
+            )
+            
+            # Generate data type distribution summary
+            dtype_counts = latest_df_original.dtypes.value_counts().reset_index()
+            dtype_counts.columns = ['Data Type', 'Count']
+            
+            dtype_html = dtype_counts.to_html(
+                classes=["table", "table-sm", "table-bordered", "table-striped"],
+                justify="left",
+                index=False
+            )
+            
+            # Generate distribution plot for YearMade (a key feature in the bulldozer dataset)
+            dist_plot_base64 = None
+            
+            if 'YearMade' in latest_df_original.columns:
                 try:
-                    prediction, bias, contributions = treeinterpreter.predict(model, row_for_interpretation.values)
-                    waterfall_features = df_prepared.columns
-                    plt.figure(figsize=(18, 10))
-                    waterfall_chart.plot(waterfall_features, contributions[0], threshold=0.01,
-                                         rotation_value=45, formatting='{:,.3f}', net_label="Net Prediction",
-                                         Title=f"Prediction Breakdown for SaleID: {first_sale_id}")
-                    plt.subplots_adjust(bottom=0.35)
+                    plt.figure(figsize=(12, 6))
+                    
+                    # Filter out potentially erroneous years (e.g., 1000, 1900, etc.)
+                    # but still show all relevant manufacturing years
+                    year_data = latest_df_original['YearMade'].copy()
+                    year_data = year_data[(year_data > 1900) & (year_data <= 2025)]
+                    
+                    # Create histogram with kde
+                    ax = sns.histplot(year_data, kde=True, bins=30)
+                    
+                    # Add vertical lines for key time periods in construction equipment history
+                    key_years = [1950, 1970, 1990, 2000, 2010]
+                    for year in key_years:
+                        if year >= year_data.min() and year <= year_data.max():
+                            plt.axvline(x=year, color='red', linestyle='--', alpha=0.7)
+                    
+                    plt.title('Distribution of YearMade (Manufacturing Year)')
+                    plt.xlabel('Year')
+                    plt.ylabel('Count')
+                    
+                    # Add summary statistics as text
+                    stats_text = (f"Mean: {year_data.mean():.1f}\n"
+                                 f"Median: {year_data.median()}\n"
+                                 f"Min: {year_data.min()}\n"
+                                 f"Max: {year_data.max()}")
+                    
+                    plt.text(0.05, 0.95, stats_text, transform=ax.transAxes,
+                            verticalalignment='top', bbox={'boxstyle': 'round', 'alpha': 0.5})
+                    
                     plt.tight_layout()
-
-                    img_buffer_waterfall = io.BytesIO()
-                    plt.savefig(img_buffer_waterfall, format='png')
-                    img_buffer_waterfall.seek(0)
-                    plot_waterfall_base64 = base64.b64encode(img_buffer_waterfall.read()).decode('utf-8')
+                    
+                    img_buffer = io.BytesIO()
+                    plt.savefig(img_buffer, format='png')
+                    img_buffer.seek(0)
+                    dist_plot_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
                     plt.close()
-                except Exception as e_ti:
-                    print(f"Error during initial tree interpretation: {e_ti}")
-                    # ... error handling ...
-            else:
-                print("Initial: Model not compatible with treeinterpreter.")
+                    
+                    # Store the string name for the UI
+                    plot_col = 'YearMade'
+                    
+                except Exception as plot_error:
+                    print(f"Error generating YearMade distribution plot: {plot_error}")
+            
+            # Also check for other important features if YearMade is not available
+            elif len(latest_df_original.select_dtypes(include=['number']).columns) > 0:
+                try:
+                    # Fall back to another numeric column if YearMade isn't available
+                    numeric_cols = latest_df_original.select_dtypes(include=['number']).columns
+                    # Prefer important bulldozer features if available
+                    preferred_cols = ['ProductSize', 'ModelID', 'age', 'MachineHoursCurrentMeter']
+                    plot_col = next((col for col in preferred_cols if col in numeric_cols), 
+                                   next((col for col in numeric_cols if 'id' not in col.lower()), numeric_cols[0]))
+                    
+                    plt.figure(figsize=(10, 6))
+                    sns.histplot(latest_df_original[plot_col].dropna(), kde=True)
+                    plt.title(f'Distribution of {plot_col}')
+                    plt.tight_layout()
+                    
+                    img_buffer = io.BytesIO()
+                    plt.savefig(img_buffer, format='png')
+                    img_buffer.seek(0)
+                    dist_plot_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
+                    plt.close()
+                except Exception as plot_error:
+                    print(f"Error generating distribution plot: {plot_error}")
+            
+            # Generate sale date analysis plots
+            date_plot_base64 = None
+            if 'saledate' in df.columns:
+                try:
+                    # Ensure saledate is in datetime format
+                    df['saledate'] = pd.to_datetime(df['saledate'], errors='coerce')
+                    
+                    # Create a figure with two subplots - sales count by year and month
+                    fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+                    
+                    # Sales count by year
+                    yearly_sales = df.groupby(df['saledate'].dt.year).size()
+                    yearly_sales.plot(kind='bar', ax=axes[0])
+                    axes[0].set_title('Number of Sales by Year')
+                    axes[0].set_xlabel('Year')
+                    axes[0].set_ylabel('Count')
+                    
+                    # Sales count by month
+                    monthly_sales = df.groupby(df['saledate'].dt.month).size()
+                    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    monthly_sales.index = [month_names[i-1] for i in monthly_sales.index]
+                    monthly_sales.plot(kind='bar', ax=axes[1])
+                    axes[1].set_title('Number of Sales by Month')
+                    axes[1].set_xlabel('Month')
+                    axes[1].set_ylabel('Count')
+                    
+                    plt.tight_layout()
+                    
+                    date_buffer = io.BytesIO()
+                    plt.savefig(date_buffer, format='png')
+                    date_buffer.seek(0)
+                    date_plot_base64 = base64.b64encode(date_buffer.read()).decode('utf-8')
+                    plt.close()
+                    
+                    # If SalePrice or a similar column exists, show price trends over time
+                    price_trend_base64 = None
+                    price_col = next((col for col in df.columns if 'price' in col.lower() or 'sale' in col.lower() and col.lower() != 'saledate'), None)
+                    
+                    if price_col and df[price_col].dtype in [np.float64, np.int64]:
+                        fig, ax = plt.subplots(figsize=(12, 6))
+                        
+                        # Create a new column for year-month
+                        df['year_month'] = df['saledate'].dt.to_period('M')
+                        
+                        # Group by year_month and calculate median price
+                        price_over_time = df.groupby('year_month')[price_col].median()
+                        
+                        # Plot median price over time
+                        price_over_time.plot(ax=ax)
+                        ax.set_title(f'Median {price_col} Over Time')
+                        ax.set_xlabel('Date')
+                        ax.set_ylabel(price_col)
+                        
+                        plt.tight_layout()
+                        
+                        price_buffer = io.BytesIO()
+                        plt.savefig(price_buffer, format='png')
+                        price_buffer.seek(0)
+                        price_trend_base64 = base64.b64encode(price_buffer.read()).decode('utf-8')
+                        plt.close()
+                        
+                except Exception as date_plot_error:
+                    print(f"Error generating date analysis plots: {date_plot_error}")
+                    traceback.print_exc()
+            
+            return templates.TemplateResponse("index.html", {
+                "request": request,
+                "filename": file.filename,
+                "data_preview_html": df_preview_html,
+                "stats_html": stats_html,
+                "missing_html": missing_html,
+                "dtype_html": dtype_html,
+                "dist_plot": dist_plot_base64,
+                "date_plot": date_plot_base64,
+                "price_trend_plot": price_trend_base64 if 'price_trend_base64' in locals() else None,
+                "plot_col": plot_col if 'plot_col' in locals() else None,
+                "num_rows": num_rows,
+                "num_cols": num_cols,
+                "show_predict_button": True # Flag to show "Proceed to Predict" button
+            })
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            print(error_detail)
+            return templates.TemplateResponse("index.html", {"request": request, "result": f"Error processing file for preview: {str(e)}"})
+    
+    # Default case if no action and no file (e.g., direct post to / without payload)
+    return templates.TemplateResponse("index.html", {"request": request, "result": "Please upload a file."})
 
-
-        return templates.TemplateResponse("result.html", {
-            "request": request,
-            "predictions": zip(sale_ids, prediction_list), # Pass original sale_ids and predictions
-            "plot1": plot1_base64,
-            "plot_waterfall": plot_waterfall_base64,
-            "first_sale_id": first_sale_id
-        })
-    except Exception as e:
-        error_detail = traceback.format_exc()
-        print(error_detail)
-        return templates.TemplateResponse("index.html", {"request": request, "result": f"Error: {str(e)}"})
 
 @app.get("/export_csv")
 async def export_csv():
