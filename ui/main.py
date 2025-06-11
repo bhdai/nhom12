@@ -23,36 +23,52 @@ except Exception as e:
     model = None
     print(f"Failed to load model: {e}")
 
+# load training data to extract parameters
+train_df = pd.read_csv('../data/TrainAndValid.csv', parse_dates=['saledate'], low_memory=False)
+
+TRAINING_PARAMS = {
+    'train_min_date': train_df['saledate'].min(),
+    'imputation_modes': {
+        'Enclosure': train_df['Enclosure'].mode()[0],
+        'Hydraulics': train_df['Hydraulics'].mode()[0]
+    },
+    'year_made_min_fill': 1950
+}
+
 def extract_tire_size(x):
     if pd.isna(x): return -2
     if x == 'None or Unspecified': return -1
     if 'inch' in x: return float(x.split(' ')[0])
     return float(x.replace('"', ''))
 
-train_df = pd.read_csv('../data/TrainAndValid.csv', parse_dates=['saledate'], low_memory=False)
-
 keeps = ['YearMade', 'ProductSize', 'Coupler_System', 'fiProductClassDesc',
        'fiSecondaryDesc', 'saleElapsed', 'fiModelDesc', 'ModelID',
        'fiModelDescriptor', 'Enclosure', 'ProductGroup', 'Tire_Size_num',
-       'Coupler', 'has_Hydraulics', 'Drive_System']
+       'Coupler', 'has_Hydraulics', 'Drive_System'] # 'has_Enclosure' will be created
 
-def prepare_test(df_test, to_keep, train_min_date):
+def prepare_test(df_test, to_keep_list, training_params_dict):
     df = df_test.copy()
     df['Tire_Size_num'] = df['Tire_Size'].apply(extract_tire_size)
     size_order = ['Mini', 'Compact', 'Small', 'Medium', 'Large / Medium', 'Large']
     df['ProductSize'] = pd.Categorical(df['ProductSize'], categories=size_order, ordered=True)
     idx = df['YearMade'] > df['saledate'].dt.year
     df.loc[idx, 'YearMade'] = df.loc[idx, 'saledate'].dt.year
-    df['saleElapsed'] = (df['saledate'] - train_min_date).dt.days
+    df['saleElapsed'] = (df['saledate'] - training_params_dict['train_min_date']).dt.days
     df.drop('saledate', axis=1, inplace=True)
-    df.loc[df['YearMade'] < 1900, 'YearMade'] = 1950
+    df.loc[df['YearMade'] < 1900, 'YearMade'] = training_params_dict['year_made_min_fill']
 
     for col in ['Enclosure', 'Hydraulics']:
-        mode_val = train_df[col].mode()[0]
+        mode_val = training_params_dict['imputation_modes'][col]
         df[f'has_{col}'] = (~df[col].isna()).astype(int)
         df.fillna({col: mode_val}, inplace=True)
 
-    df_processed = df[to_keep].copy()
+
+    # ensure all columns in to_keep_list are present, add them with NaNs if not.
+    for col in to_keep_list:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    df_processed = df[to_keep_list].copy()
     obj_cols = df_processed.select_dtypes(include=['object']).columns.to_list()
 
     for col in obj_cols:
@@ -77,48 +93,24 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+        # ensure 'saledate' is parsed, handling potential errors by coercing to NaT
         df['saledate'] = pd.to_datetime(df['saledate'], errors='coerce')
+        
+        # check for NaT in 'saledate' which are critical for 'saleElapsed'
+        if df['saledate'].isnull().any():
+            # handle rows with invalid sale dates, by returning an error
+            return templates.TemplateResponse("index.html", {"request": request, "result": "Error: CSV contains rows with invalid or missing 'saledate'."})
+
         sale_ids = df['SalesID'].tolist()
 
-        min_date = train_df['saledate'].min()
-        df = prepare_test(df, keeps, min_date)
-
-        predictions = model.predict(df)
+        df_prepared = prepare_test(df, keeps, TRAINING_PARAMS)
+        
+        predictions = model.predict(df_prepared)
         predictions = np.exp(predictions)
         prediction_list = predictions.tolist()
 
-        # sale_ids_draw = sale_ids[:20]
-        # predictions_draw = predictions[:20]
-        #
-        # diffs = [predictions_draw[0]] + [predictions_draw[i] - predictions_draw[i - 1] for i in range(1, len(predictions_draw))]
-        # cumulative = np.cumsum(diffs)
-        # df = pd.DataFrame({
-        #     'SaleID': [str(sid) for sid in sale_ids_draw],
-        #     'Change': diffs,
-        #     'Cumulative': cumulative
-        # })
-        # sns.set(style="whitegrid")
-        # fig, ax = plt.subplots(figsize=(10, 6))
-        # colors = ['green' if v >= 0 else 'red' for v in df['Change']]
-        # bottom = 0
-        # for i in range(len(df)):
-        #     ax.bar(df['SaleID'][i], df['Change'][i], bottom=bottom, color=colors[i])
-        #     height = bottom + df['Change'][i]
-        #     ax.text(i, height, f"{height:,.0f}", ha='center', va='bottom', fontsize=9)
-        #     bottom += df['Change'][i]
-        # ax.axhline(y=bottom, color='blue', linestyle='--', linewidth=1)
-        # ax.text(len(df) - 0.5, bottom, f"Tổng: {int(bottom):,}", color='blue', va='bottom', fontsize=10)
-        # ax.set_title("Biểu đồ Thác nước: Giá dự đoán theo SaleID", fontsize=14)
-        # ax.set_ylabel("Giá dự đoán (VNĐ)")
-        # plt.xticks(rotation=45)
-        # plt.tight_layout()
-        # plot1_path = f"static/feature_importance_{uuid.uuid4().hex}.png"
-        # plt.savefig(plot1_path, dpi=300)
-        # plt.close()
-
         return templates.TemplateResponse("result.html", {
             "request": request,
-            # "plot1": "/" + plot1_path,
             "predictions": zip(sale_ids, prediction_list)
         })
     except Exception as e:
