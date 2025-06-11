@@ -10,6 +10,20 @@
       max-height: 400px; /* Adjust as needed */
       overflow-y: auto;
     }
+    .loading-spinner {
+      display: none; /* Hidden by default */
+      border: 4px solid #f3f3f3; /* Light grey */
+      border-top: 4px solid #3498db; /* Blue */
+      border-radius: 50%;
+      width: 30px;
+      height: 30px;
+      animation: spin 1s linear infinite;
+      margin: 10px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body class="bg-light">
@@ -25,6 +39,7 @@
               <tr>
                 <th>SaleID</th>
                 <th>Giá dự đoán</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -32,6 +47,7 @@
               <tr>
                 <td>{{ sale_id }}</td>
                 <td>{{ value | round(2) }}</td>
+                <td><button class="btn btn-sm btn-info explain-btn" data-saleid="{{ sale_id }}">Explain</button></td>
               </tr>
               {% endfor %}
             </tbody>
@@ -47,16 +63,59 @@
         <img src="data:image/png;base64,{{ plot1 }}" class="img-fluid rounded shadow-sm mb-4" alt="Feature Importances">
         {% endif %}
 
-        {% if plot_waterfall %}
-        <h5>Biểu đồ: Prediction Breakdown for SaleID {{ first_sale_id }}</h5>
-        <img src="data:image/png;base64,{{ plot_waterfall }}" class="img-fluid rounded shadow-sm mb-4" alt="Prediction Breakdown Waterfall Chart">
-        {% endif %}
-
+        <h5 id="waterfall-title">Biểu đồ: Prediction Breakdown for SaleID {{ first_sale_id if first_sale_id else 'N/A' }}</h5>
+        <div id="waterfall-loading" class="loading-spinner"></div>
+        <img id="waterfall-chart-img" src="data:image/png;base64,{{ plot_waterfall if plot_waterfall else '' }}" class="img-fluid rounded shadow-sm mb-4" alt="Prediction Breakdown Waterfall Chart">
+        
         <div class="text-center">
           <a href="/" class="btn btn-primary">← Quay lại trang upload</a>
         </div>
       </div>
     </div>
   </div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const explainButtons = document.querySelectorAll('.explain-btn');
+    const waterfallChartImg = document.getElementById('waterfall-chart-img');
+    const waterfallTitle = document.getElementById('waterfall-title');
+    const waterfallLoading = document.getElementById('waterfall-loading');
+
+    explainButtons.forEach(button => {
+      button.addEventListener('click', function() {
+        const saleId = this.dataset.saleid;
+        waterfallTitle.textContent = `Biểu đồ: Prediction Breakdown for SaleID ${saleId}`;
+        waterfallChartImg.style.display = 'none'; // Hide current chart
+        waterfallLoading.style.display = 'block'; // Show spinner
+
+        fetch(`/explain_prediction/${saleId}`)
+          .then(response => {
+            if (!response.ok) {
+              return response.json().then(err => { throw new Error(err.error || 'Network response was not ok'); });
+            }
+            return response.json();
+          })
+          .then(data => {
+            if (data.plot_waterfall) {
+              waterfallChartImg.src = `data:image/png;base64,${data.plot_waterfall}`;
+              waterfallChartImg.style.display = 'block'; // Show new chart
+            } else if (data.error) {
+              alert('Error generating explanation: ' + data.error);
+              waterfallChartImg.style.display = 'none'; // Keep it hidden or show placeholder
+            }
+          })
+          .catch(error => {
+            console.error('Error fetching explanation:', error);
+            alert('Error fetching explanation: ' + error.message);
+            waterfallChartImg.style.display = 'none'; // Keep it hidden or show placeholder
+          })
+          .finally(() => {
+            waterfallLoading.style.display = 'none'; // Hide spinner
+          });
+      });
+    });
+  });
+</script>
+
 </body>
 </html>

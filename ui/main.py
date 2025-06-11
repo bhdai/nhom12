@@ -1,7 +1,7 @@
 import traceback
 
 from fastapi import FastAPI, UploadFile, File, Request, Form
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse # Added JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pandas as pd
@@ -19,8 +19,10 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# global variable to store the latest predictions
+# global variables to store the latest predictions and data
 latest_predictions_df = None
+latest_df_prepared = None # To store the dataframe used for prediction
+latest_df_original = None # To store the original uploaded dataframe
 
 try:
     with open("model.pkl", "rb") as f:
@@ -92,7 +94,7 @@ async def form_page(request: Request):
 
 @app.post("/", response_class=HTMLResponse)
 async def handle_upload(request: Request, file: UploadFile = File(...)):
-    global latest_predictions_df # declare intent to modify global variable
+    global latest_predictions_df, latest_df_prepared, latest_df_original # Include new global vars
 
     if file.content_type != "text/csv":
         return templates.TemplateResponse("index.html", {"request": request, "result": "File must be CSV."})
@@ -104,24 +106,21 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
         contents = await file.read()
         # read the CSV into df first
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
-        # keep a copy of the original df for later use if needed, before prepare_test modifies it
-        df_original = df.copy() 
+        # keep a copy of the original df for later use
+        latest_df_original = df.copy() # Store original df
 
         # ensure 'saledate' is parsed, handling potential errors by coercing to NaT
         df['saledate'] = pd.to_datetime(df['saledate'], errors='coerce')
         
-        # check for NaT in 'saledate' which are critical for 'saleElapsed'
         if df['saledate'].isnull().any():
-            # handle rows with invalid sale dates, by returning an error
             return templates.TemplateResponse("index.html", {"request": request, "result": "Error: CSV contains rows with invalid or missing 'saledate'."})
 
         sale_ids = df['SalesID'].tolist()
-        # Store the first SaleID for the waterfall chart title
         first_sale_id = sale_ids[0] if sale_ids else "N/A"
 
-        # Pass a copy of df to prepare_test as it modifies the DataFrame
         df_prepared = prepare_test(df.copy(), keeps, TRAINING_PARAMS)
-        
+        latest_df_prepared = df_prepared.copy() # Store prepared df
+
         predictions_array = model.predict(df_prepared)
         predictions_array = np.exp(predictions_array)
         prediction_list = predictions_array.tolist()
@@ -155,18 +154,17 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
         # generate Waterfall chart for the first instance
         plot_waterfall_base64 = None
         if not df_prepared.empty:
-            row_for_interpretation = df_prepared.iloc[[0]] # Get the first row as a DataFrame
-            
+            # Initial waterfall for the first row
+            row_for_interpretation = df_prepared.iloc[[0]]
             if hasattr(model, 'estimators_') and hasattr(model, 'predict'):
                 try:
                     prediction, bias, contributions = treeinterpreter.predict(model, row_for_interpretation.values)
-                    
                     waterfall_features = df_prepared.columns
-                    
                     plt.figure(figsize=(18, 10))
                     waterfall_chart.plot(waterfall_features, contributions[0], threshold=0.01,
                                          rotation_value=45, formatting='{:,.3f}', net_label="Net Prediction",
                                          Title=f"Prediction Breakdown for SaleID: {first_sale_id}")
+                    plt.subplots_adjust(bottom=0.35)
                     plt.tight_layout()
 
                     img_buffer_waterfall = io.BytesIO()
@@ -175,15 +173,15 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
                     plot_waterfall_base64 = base64.b64encode(img_buffer_waterfall.read()).decode('utf-8')
                     plt.close()
                 except Exception as e_ti:
-                    print(f"Error during tree interpretation or waterfall plot generation: {e_ti}")
-                    error_detail_ti = traceback.format_exc()
-                    print(error_detail_ti)
+                    print(f"Error during initial tree interpretation: {e_ti}")
+                    # ... error handling ...
             else:
-                print("Model does not seem to be a scikit-learn ensemble model compatible with treeinterpreter.")
+                print("Initial: Model not compatible with treeinterpreter.")
+
 
         return templates.TemplateResponse("result.html", {
             "request": request,
-            "predictions": zip(sale_ids, prediction_list),
+            "predictions": zip(sale_ids, prediction_list), # Pass original sale_ids and predictions
             "plot1": plot1_base64,
             "plot_waterfall": plot_waterfall_base64,
             "first_sale_id": first_sale_id
@@ -209,3 +207,57 @@ async def export_csv():
         )
     else:
         return HTMLResponse("No data to export. Please upload a file and make predictions first.", status_code=404)
+
+@app.get("/explain_prediction/{sale_id}", response_class=JSONResponse)
+async def explain_prediction(sale_id: int, request: Request):
+    global latest_df_prepared, latest_df_original
+
+    if latest_df_prepared is None or latest_df_original is None or model is None:
+        return JSONResponse(content={"error": "No data available or model not loaded. Please upload a file first."}, status_code=404)
+
+    try:
+        # find the index of the sale_id in the original dataframe
+        original_row_index = latest_df_original[latest_df_original['SalesID'] == sale_id].index
+        if original_row_index.empty:
+            return JSONResponse(content={"error": f"SaleID {sale_id} not found in the uploaded data."}, status_code=404)
+        
+        row_index = original_row_index[0] # get the first matching index
+
+        # ensure the index is within the bounds of latest_df_prepared
+        if row_index >= len(latest_df_prepared):
+            return JSONResponse(content={"error": f"Index for SaleID {sale_id} is out of bounds for prepared data."}, status_code=404)
+
+        row_for_interpretation = latest_df_prepared.iloc[[row_index]]
+        
+        plot_waterfall_base64 = None
+        actual_sale_id_for_plot = latest_df_original.iloc[row_index]['SalesID']
+
+
+        if hasattr(model, 'estimators_') and hasattr(model, 'predict'):
+            prediction, bias, contributions = treeinterpreter.predict(model, row_for_interpretation.values)
+            waterfall_features = latest_df_prepared.columns
+            
+            plt.figure(figsize=(18, 10))
+            waterfall_chart.plot(waterfall_features, contributions[0], threshold=0.01,
+                                 rotation_value=45, formatting='{:,.3f}', net_label="Net Prediction",
+                                 Title=f"Prediction Breakdown for SaleID: {actual_sale_id_for_plot}")
+            plt.subplots_adjust(bottom=0.35)
+            plt.tight_layout()
+            
+            img_buffer = io.BytesIO()
+            plt.savefig(img_buffer, format='png')
+            img_buffer.seek(0)
+            plot_waterfall_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
+            plt.close()
+            
+            return JSONResponse(content={
+                "plot_waterfall": plot_waterfall_base64,
+                "sale_id": str(actual_sale_id_for_plot) # ensure sale_id is string for JSON
+            })
+        else:
+            return JSONResponse(content={"error": "Model is not compatible with treeinterpreter."}, status_code=500)
+
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        print(f"Error in /explain_prediction/{sale_id}: {e}\\n{error_detail}")
+        return JSONResponse(content={"error": f"An error occurred: {str(e)}"}, status_code=500)
