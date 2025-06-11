@@ -42,8 +42,15 @@
           <a href="/export_csv" class="btn btn-success">💾 Export to CSV</a>
         </div>
 
+        {% if plot1 %}
         <h5>Biểu đồ: Feature Importances</h5>
         <img src="data:image/png;base64,{{ plot1 }}" class="img-fluid rounded shadow-sm mb-4" alt="Feature Importances">
+        {% endif %}
+
+        {% if plot_waterfall %}
+        <h5>Biểu đồ: Prediction Breakdown for SaleID {{ first_sale_id }}</h5>
+        <img src="data:image/png;base64,{{ plot_waterfall }}" class="img-fluid rounded shadow-sm mb-4" alt="Prediction Breakdown Waterfall Chart">
+        {% endif %}
 
         <div class="text-center">
           <a href="/" class="btn btn-primary">← Quay lại trang upload</a>

@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import uuid
 import base64
+from treeinterpreter import treeinterpreter
+import waterfall_chart
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -100,7 +102,11 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
 
     try:
         contents = await file.read()
+        # read the CSV into df first
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+        # keep a copy of the original df for later use if needed, before prepare_test modifies it
+        df_original = df.copy() 
+
         # ensure 'saledate' is parsed, handling potential errors by coercing to NaT
         df['saledate'] = pd.to_datetime(df['saledate'], errors='coerce')
         
@@ -110,8 +116,11 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
             return templates.TemplateResponse("index.html", {"request": request, "result": "Error: CSV contains rows with invalid or missing 'saledate'."})
 
         sale_ids = df['SalesID'].tolist()
+        # Store the first SaleID for the waterfall chart title
+        first_sale_id = sale_ids[0] if sale_ids else "N/A"
 
-        df_prepared = prepare_test(df, keeps, TRAINING_PARAMS)
+        # Pass a copy of df to prepare_test as it modifies the DataFrame
+        df_prepared = prepare_test(df.copy(), keeps, TRAINING_PARAMS)
         
         predictions_array = model.predict(df_prepared)
         predictions_array = np.exp(predictions_array)
@@ -143,10 +152,41 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
             plot1_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
             plt.close() # close the plot to free up memory
 
+        # generate Waterfall chart for the first instance
+        plot_waterfall_base64 = None
+        if not df_prepared.empty:
+            row_for_interpretation = df_prepared.iloc[[0]] # Get the first row as a DataFrame
+            
+            if hasattr(model, 'estimators_') and hasattr(model, 'predict'):
+                try:
+                    prediction, bias, contributions = treeinterpreter.predict(model, row_for_interpretation.values)
+                    
+                    waterfall_features = df_prepared.columns
+                    
+                    plt.figure(figsize=(18, 10))
+                    waterfall_chart.plot(waterfall_features, contributions[0], threshold=0.01,
+                                         rotation_value=45, formatting='{:,.3f}', net_label="Net Prediction",
+                                         Title=f"Prediction Breakdown for SaleID: {first_sale_id}")
+                    plt.tight_layout()
+
+                    img_buffer_waterfall = io.BytesIO()
+                    plt.savefig(img_buffer_waterfall, format='png')
+                    img_buffer_waterfall.seek(0)
+                    plot_waterfall_base64 = base64.b64encode(img_buffer_waterfall.read()).decode('utf-8')
+                    plt.close()
+                except Exception as e_ti:
+                    print(f"Error during tree interpretation or waterfall plot generation: {e_ti}")
+                    error_detail_ti = traceback.format_exc()
+                    print(error_detail_ti)
+            else:
+                print("Model does not seem to be a scikit-learn ensemble model compatible with treeinterpreter.")
+
         return templates.TemplateResponse("result.html", {
             "request": request,
             "predictions": zip(sale_ids, prediction_list),
-            "plot1": plot1_base64
+            "plot1": plot1_base64,
+            "plot_waterfall": plot_waterfall_base64,
+            "first_sale_id": first_sale_id
         })
     except Exception as e:
         error_detail = traceback.format_exc()
