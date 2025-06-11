@@ -661,7 +661,9 @@ dependencies = [
     { name = "python-multipart" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+    { name = "treeinterpreter" },
     { name = "uvicorn" },
+    { name = "waterfallcharts" },
 ]
 
 [package.metadata]
@@ -678,7 +680,9 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "seaborn", specifier = ">=0.13.2" },
+    { name = "treeinterpreter", specifier = ">=0.2.3" },
     { name = "uvicorn", specifier = ">=0.34.2" },
+    { name = "waterfallcharts", specifier = ">=3.8" },
 ]
 
 [[package]]
@@ -1302,6 +1306,15 @@ wheels = [
 ]
 
 [[package]]
+name = "treeinterpreter"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/42/de8d55dd4567699e55fc1901aaf05eab2bb00138374ad045ba7f53ed4596/treeinterpreter-0.2.3.tar.gz", hash = "sha256:da5c24f802f7d072bc457b6e4b289d5ee41961ce33437e8dc439a2cfd9c6d994", size = 6225, upload-time = "2021-01-10T20:12:40.459Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/19/fa8556093f6b8c7374825118e05cf5a99c71262392382c3642ab1fd8a742/treeinterpreter-0.2.3-py2.py3-none-any.whl", hash = "sha256:48660bbddd4577e28655abf0ffb77eb8b8e57d771e32503be56737103aa457a4", size = 5966, upload-time = "2021-01-10T20:12:39.32Z" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.13.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1352,6 +1365,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/a6/ae/9bbb19b9e1c450cf9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/4b/4cef6ce21a2aaca9d852a6e84ef4f135d99fcd74fa75105e2fc0c8308acd/uvicorn-0.34.2-py3-none-any.whl", hash = "sha256:deb49af569084536d269fe0a6d67e3754f104cf03aba7c11c40f01aadf33c403", size = 62483, upload-time = "2025-04-19T06:02:48.42Z" },
 ]
+
+[[package]]
+name = "waterfallcharts"
+version = "3.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/f2/990e1040124bb804d75635f439379f9a712c9418e59a7161b4f47a6e467e/waterfallcharts-3.8.tar.gz", hash = "sha256:01deb3464968bf6481f3b8b2cb09f2fb1011f1865fbb608e0520d7957bedd7b1", size = 3944, upload-time = "2017-11-27T21:48:57.895Z" }
 
 [[package]]
 name = "wcwidth"

@@ -210,6 +210,8 @@ traitlets==5.14.3
     #   jupyter-client
     #   jupyter-core
     #   matplotlib-inline
+treeinterpreter==0.2.3
+    # via nhom12
 typing-extensions==4.13.2
     # via
     #   anyio
@@ -226,6 +228,8 @@ urllib3==2.4.0
     #   kaggle
     #   requests
 uvicorn==0.34.2
+    # via nhom12
+waterfallcharts==3.8
     # via nhom12
 wcwidth==0.2.13
     # via prompt-toolkit

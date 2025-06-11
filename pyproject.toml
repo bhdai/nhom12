@@ -17,5 +17,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
+    "treeinterpreter>=0.2.3",
     "uvicorn>=0.34.2",
+    "waterfallcharts>=3.8",
 ]
