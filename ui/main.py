@@ -1,7 +1,7 @@
 import traceback
 
 from fastapi import FastAPI, UploadFile, File, Request, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pandas as pd
@@ -11,10 +11,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import uuid
+import base64
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+# global variable to store the latest predictions
+latest_predictions_df = None
 
 try:
     with open("model.pkl", "rb") as f:
@@ -86,9 +90,13 @@ async def form_page(request: Request):
 
 @app.post("/", response_class=HTMLResponse)
 async def handle_upload(request: Request, file: UploadFile = File(...)):
+    global latest_predictions_df # declare intent to modify global variable
 
     if file.content_type != "text/csv":
         return templates.TemplateResponse("index.html", {"request": request, "result": "File must be CSV."})
+
+    if model is None:
+        return templates.TemplateResponse("index.html", {"request": request, "result": "Model not loaded. Please check server logs."})
 
     try:
         contents = await file.read()
@@ -105,15 +113,59 @@ async def handle_upload(request: Request, file: UploadFile = File(...)):
 
         df_prepared = prepare_test(df, keeps, TRAINING_PARAMS)
         
-        predictions = model.predict(df_prepared)
-        predictions = np.exp(predictions)
-        prediction_list = predictions.tolist()
+        predictions_array = model.predict(df_prepared)
+        predictions_array = np.exp(predictions_array)
+        prediction_list = predictions_array.tolist()
+
+        # store predictions for CSV export
+        latest_predictions_df = pd.DataFrame({
+            'SaleID': sale_ids,
+            'PredictedPrice': [round(p, 2) for p in prediction_list]
+        })
+
+        # generate Feature Importances plot
+        plot1_base64 = None
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+            feature_names = df_prepared.columns
+            feature_importances = pd.Series(importances, index=feature_names).sort_values(ascending=False)
+            
+            plt.figure(figsize=(10, 8))
+            sns.barplot(x=feature_importances, y=feature_importances.index)
+            plt.title('Feature Importances')
+            plt.xlabel('Importance')
+            plt.ylabel('Feature')
+            plt.tight_layout()
+            
+            img_buffer = io.BytesIO()
+            plt.savefig(img_buffer, format='png')
+            img_buffer.seek(0)
+            plot1_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
+            plt.close() # close the plot to free up memory
 
         return templates.TemplateResponse("result.html", {
             "request": request,
-            "predictions": zip(sale_ids, prediction_list)
+            "predictions": zip(sale_ids, prediction_list),
+            "plot1": plot1_base64
         })
     except Exception as e:
         error_detail = traceback.format_exc()
         print(error_detail)
         return templates.TemplateResponse("index.html", {"request": request, "result": f"Error: {str(e)}"})
+
+@app.get("/export_csv")
+async def export_csv():
+    global latest_predictions_df
+    if latest_predictions_df is not None:
+        output = io.StringIO()
+        latest_predictions_df.to_csv(output, index=False)
+        csv_data = output.getvalue()
+        output.close()
+        
+        return StreamingResponse(
+            iter([csv_data]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=predictions.csv"}
+        )
+    else:
+        return HTMLResponse("No data to export. Please upload a file and make predictions first.", status_code=404)
