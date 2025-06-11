@@ -12,5 +12,5 @@ data/*
 
 ui/static/*
 .idea
-ui/model.pkl
+*.pkl
 ui/test.csv
