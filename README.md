@@ -1,4 +1,4 @@
-# Ứng dụng Dự đoán Giá Máy Xúc
+# Ứng dụng dự đoán giá đấu giá máy xúc
 
 ## Tính năng
 
@@ -47,6 +47,6 @@ uvicorn main:app --reload
 
 ![Image](https://github.com/user-attachments/assets/abeb7db8-efa8-45e2-9e93-62e3547605ab)
 
-![Image](https://github.com/user-attachments/assets/6f23ca57-2751-4dd1-b07e-91405ff4c24f)
+![Image](https://github.com/user-attachments/assets/063b248f-5a33-454e-ba98-60e0837cb426)
 
 ![Image](https://github.com/user-attachments/assets/236de79c-8db2-46db-97ed-068edf8cefe9)
